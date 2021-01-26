@@ -17,13 +17,13 @@ export PLATFORM_OPTIONS_FLAGS="-e name=${PLATFORM_CLUSTER_ID} -e domain=${PLATFO
 export PLATFORM_CONFIG=${PLATFORM_CONFIG:-test/vsphere/vsphere.yaml}
 unset KUBECONFIG
 
-mkdir ~/.ssh
+mkdir -p ~/.ssh
 chmod 700 ~/.ssh
 echo "$SSH_SECRET_KEY_BASE64" | base64 -d > ~/.ssh/id_rsa
 chmod 600 ~/.ssh/id_rsa
 
 sshuttle --dns -e "ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no" -r $SSH_USER@$SSH_JUMP_HOST $VPN_NETWORK &
-SSHUTTLE_PID=$BASHPID
+SSHUTTLE_PID=$?
 # Wait for connection
 sleep 2s
 
@@ -35,29 +35,33 @@ $BIN ca generate --name sealed-secrets --cert-path .certs/sealed-secrets-crt.pem
 printf "\n\n\n\n$(tput bold)Provision Cluster$(tput setaf 7)\n"
 $BIN provision vsphere-cluster $PLATFORM_OPTIONS_FLAGS
 
-
 printf "\n\n\n\n$(tput bold)Basic Deployments$(tput setaf 7)\n"
 
 $BIN deploy phases --crds --calico --base --stubs --dex $PLATFORM_OPTIONS_FLAGS
 
-printf "\n\n\n\n$(tput bold)Up?$(tput setaf 7)\n"
-# wait for the base deployment with stubs to come up healthy
-$BIN test phases --base --stubs --wait 120 --progress=false $PLATFORM_OPTIONS_FLAGS
-
-printf "\n\n\n\n$(tput bold)All Deployments$(tput setaf 7)\n"
-$BIN deploy all $PLATFORM_OPTIONS_FLAGS
-
-
 failed=false
 
-## e2e do not use --wait at the run level, if needed each individual test implements
-## its own wait. e2e tests should always pass once the non e2e have passed
-if ! $BIN test  all --e2e --progress=false --junit-path test-results/results.xml $PLATFORM_OPTIONS_FLAGS; then
+printf "\n\n\n\n$(tput bold)Up?$(tput setaf 7)\n"
+# wait for the base deployment with stubs to come up healthy
+if ! $BIN test phases --base --stubs --wait 120 --progress=false $PLATFORM_OPTIONS_FLAGS; then
+  echo "Failed setting up the basic deployment"
   failed=true
 fi
 
+if [[ "$failed" = false ]]; then
+  printf "\n\n\n\n$(tput bold)All Deployments$(tput setaf 7)\n"
+  $BIN deploy all $PLATFORM_OPTIONS_FLAGS
+
+  ## e2e do not use --wait at the run level, if needed each individual test implements
+  ## its own wait. e2e tests should always pass once the non e2e have passed
+  if ! $BIN test  all --e2e --progress=false --junit-path test-results/results.xml $PLATFORM_OPTIONS_FLAGS; then
+    echo "Failure in feature test"
+    failed=true
+  fi
+fi
+
 printf "\n\n\n\n$(tput bold)Reporting$(tput setaf 7)\n"
-wget -nv https://github.com/flanksource/build-tools/releases/download/v0.9.9/build-tools
+wget -nv https://github.com/flanksource/build-tools/releases/download/v0.11.2/build-tools
 chmod +x build-tools
 ./build-tools gh actions report-junit test-results/results.xml --token $GIT_API_KEY --build "$BUILD"
 
@@ -67,8 +71,10 @@ zip -r artifacts/snapshot.zip snapshot/*
 
 $BIN terminate-orphans $PLATFORM_OPTIONS_FLAGS || echo "Orphans not terminated."
 $BIN cleanup $PLATFORM_OPTIONS_FLAGS
-kill "$BASHPID"
+#kill "$SSHUTTLE_PID"
 
 if [[ "$failed" = true ]]; then
+  echo "Test failed."
   exit 1
 fi
+echo "Test passed!"
