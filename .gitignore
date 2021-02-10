@@ -30,5 +30,6 @@ vendor/
 .vscode
 *.swp
 .certs
+.sops.*
 #goland ide generated files:
 __debug_bin
